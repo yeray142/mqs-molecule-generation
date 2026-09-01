@@ -219,7 +219,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-uv.lock
 external/
 
 CLAUDE.md
