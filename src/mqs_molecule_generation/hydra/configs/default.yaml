@@ -1,0 +1,43 @@
+defaults:
+  - _self_
+  - training: default
+  - ansatz: simple_ansatz
+  - model: discriminator
+  - model: generator
+  - seeds: seed_0
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${experiment_name}/seed_${seed}
+  sweep:
+    dir: sweeps/${now:%Y-%m-%d}/${experiment_name}
+    subdir: seed_${seed}
+
+# Top-level experiment config
+experiment_name: latstylegan_simple
+seed: 0
+dry_run: false
+
+# Canonical n_qb and n_l from paper
+n_qubits: 4
+n_layers: 2
+ansatz_type: simple  # or bel
+readout: single  # or dual
+
+training:
+  max_iterations: 5000
+  batch_size: 64
+  latent_dim: 8
+  generator_lr: 0.0001
+  discriminator_lr: 0.0001
+  n_critic: 5
+  gradient_penalty: 10.0
+  checkpoint_every: 500
+  eval_every: 100
+  n_eval_samples: 1000
+
+model:
+  discriminator:
+    readout: single
+  generator:
+    style_dim: 4

@@ -1,0 +1,8 @@
+defaults:
+  - default
+  - ansatz/simple_ansatz
+
+experiment_name: latstylegan_simple
+ansatz_type: simple
+n_qubits: 4
+n_layers: 2

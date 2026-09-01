@@ -1,0 +1,10 @@
+max_iterations: 5000
+batch_size: 64
+latent_dim: 8
+generator_lr: 0.0001
+discriminator_lr: 0.0001
+n_critic: 5
+gradient_penalty: 10.0
+checkpoint_every: 500
+eval_every: 100
+n_eval_samples: 1000

@@ -1,0 +1,1 @@
+"""BackendAdapters for LatentStyleGAN."""
