@@ -1,0 +1,28 @@
+# MOSES subsample used throughout the paper (§2.1).
+#
+# KNOWN DISCREPANCY: the paper reports train-set Filters = 0.734 (Table 3),
+# but neither moses_native (the real MOSES construction filter -- lands at
+# exactly 1.0000 on real data, as it must by construction) nor any RDKit
+# FilterCatalog combination (closest: pains_brenk_nih at 0.8552) reproduces
+# it. See tests/test_data_prep.py::TestAgainstPaper::test_train_filter_pass_rate
+# (xfail, documented) and docs/paper_mapping.md for the investigation.
+# `moses_native` is pinned anyway: it is the metric MOSES itself defines and
+# the correct thing to apply to *generated* samples downstream, even though
+# this one legacy diagnostic number can't currently be matched on the train
+# set. Non-blocking -- do not spend more time on this before Phase 0 step 2.
+_target_: mqs_molecule_generation.data.moses.PrepareConfig
+
+raw_dir: data/raw
+out_dir: data/processed
+
+seed: 0
+n_train: 12000          # paper §2.1
+n_valid: 4087           # paper §2.1
+
+# Draw from the MOSES native splits. Do not pool and re-split: Figure 12 shows
+# real train/test distribution differences that a random re-split would erase.
+train_split: train
+valid_split: test_scaffolds
+
+filter_set: moses_native
+verify_checksum: true

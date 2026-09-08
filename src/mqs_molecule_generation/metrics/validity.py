@@ -1,30 +1,35 @@
-"""Molecular validity checks via RDKit."""
+"""Molecular validity checks via RDKit (paper §2.3, "Fraction of valid molecules").
+
+RDKit is a core dependency of this project, not optional. Functions here do
+NOT catch ImportError: if RDKit is missing, that is an environment problem
+that should surface immediately and loudly, not be silently reinterpreted as
+"every molecule is invalid". A caught-and-swallowed ImportError returning
+False/0.0 is indistinguishable from a real validity failure and would corrupt
+every downstream metric without anyone noticing RDKit isn't installed.
+"""
 
 from __future__ import annotations
 
+from rdkit import Chem
+
 
 def is_valid_smiles(smiles: str) -> bool:
-    """Check if SMILES is chemically valid.
+    """Check if SMILES is chemically valid (RDKit parses and sanitizes it).
 
     Args:
         smiles: SMILES string to check.
 
     Returns:
-        True if valid, False otherwise.
+        True if valid, False otherwise. Never raises on a bad *string* --
+        only on a missing RDKit installation.
     """
     if not smiles:
         return False
-    try:
-        from rdkit import Chem
-
-        mol = Chem.MolFromSmiles(smiles)
-        return mol is not None
-    except ImportError:
-        return False
+    return Chem.MolFromSmiles(smiles) is not None
 
 
 def compute_validity(smiles_list: list[str]) -> tuple[int, int, float]:
-    """Compute validity fraction for a list of SMILES.
+    """Compute validity fraction for a list of SMILES (paper's epsilon_v).
 
     Args:
         smiles_list: List of SMILES strings.

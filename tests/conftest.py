@@ -74,3 +74,7 @@ def make_bel_circuit_spec(num_qubits: int = 4) -> Any:
         format=CircuitFormat.QASM3,
         serialized=qasm,
     )
+
+def pytest_configure(config: pytest.Config) -> None:
+    for marker in ("slow: requires the real MOSES download", "hardware: requires a QPU"):
+        config.addinivalue_line("markers", marker)

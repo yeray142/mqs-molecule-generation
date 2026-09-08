@@ -1,0 +1,22 @@
+{
+  "created_utc": "2026-09-07T08:27:14.603000+00:00",
+  "seed": 0,
+  "filter_set": "moses_native",
+  "n_train": 12000,
+  "n_valid": 4087,
+  "train_pass_rate": 1.0,
+  "valid_pass_rate": 1.0,
+  "source_url": "https://media.githubusercontent.com/media/molecularsets/moses/master/data/dataset_v1.csv",
+  "source_sha256": "bb47a94d347afd476d3828b5e26dceeabc42a2d8cf92a791d00349f22fea0d8b",
+  "source_rows": 1936962,
+  "parse_failures": 0,
+  "duplicates_removed": {
+    "train": 0,
+    "valid": 0
+  },
+  "train_valid_overlap": 0,
+  "rdkit_version": "2026.03.5",
+  "python_version": "3.12.3",
+  "git_sha": "115b24682a4e3f970a59e9b78ea79f51244e659c",
+  "extra": {}
+}
