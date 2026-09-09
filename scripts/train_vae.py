@@ -17,6 +17,16 @@ will be much slower). Writes:
 
   - results/vae_runs/n_ep_<N>_seed_<S>.json    -- metrics for check_table8.py
   - results/vae_runs/n_ep_<N>_seed_<S>.pt      -- model checkpoint
+  - results/vae_runs/n_ep_<N>_seed_<S>.vocab.json -- exact tokenizer vocabulary,
+    needed to correctly reload the checkpoint later (scripts/reconstruct.py)
+  - results/vae_runs/n_ep_<N>_seed_<S>.history.csv -- per-epoch loss/kl_loss/
+    recon_loss/kl_weight/lr (train and, since a val split is always passed
+    here, eval rows too), for plotting convergence after the fact
+
+By default every epoch's metrics are also printed live during training (via
+the tqdm progress bar's postfix) and as a permanent line to stdout -- use
+--log-every N to print less often on a long run, or --log-every 0 to print
+nothing and rely on the CSV file only.
 
 A single scalar Wasserstein distance can't distinguish "the decoder
 genuinely reconstructs the test distribution well" from "the decoder has
@@ -162,6 +172,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="load an already-trained checkpoint instead of training (re-run diagnostics only)",
     )
+    parser.add_argument(
+        "--log-every",
+        type=int,
+        default=1,
+        help="print full metrics every N epochs (default: every epoch); 0 disables printed lines",
+    )
     args = parser.parse_args(argv)
 
     set_seed(args.seed)
@@ -195,10 +211,15 @@ def main(argv: list[str] | None = None) -> int:
             f"Training for {trainer_config.n_epoch} epochs "
             f"(nominal, lr={trainer_config.lr_start})..."
         )
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = args.output_dir / f"n_ep_{args.n_epochs}_seed_{args.seed}.history.csv"
         start = time.time()
-        history = trainer.fit(model, train_loader, val_loader)
+        history = trainer.fit(
+            model, train_loader, val_loader, log_every=args.log_every, csv_path=csv_path
+        )
         elapsed = time.time() - start
         print(f"Training finished in {elapsed / 60:.1f} min")
+        print(f"Wrote per-epoch metrics to {csv_path}")
 
     print(f"Sampling {args.n_eval_samples} molecules for evaluation...")
     model.eval()
@@ -263,6 +284,10 @@ def main(argv: list[str] | None = None) -> int:
         ckpt_path = args.output_dir / f"n_ep_{args.n_epochs}_seed_{args.seed}.pt"
         torch.save(model.state_dict(), ckpt_path)
         print(f"Wrote {ckpt_path}")
+
+        vocab_path = args.output_dir / f"n_ep_{args.n_epochs}_seed_{args.seed}.vocab.json"
+        tokenizer.save(vocab_path)
+        print(f"Wrote {vocab_path}")
 
     print()
     print(json.dumps(results["metrics"], indent=2))

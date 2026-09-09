@@ -221,3 +221,114 @@ class TestVAETrainerMechanics:
             checkpoint_every=2,
         )
         assert checkpointed_epochs == [0, 2, 4]
+
+    def test_csv_log_has_one_row_per_epoch_without_val(
+        self, torch, model, tokenizer, tmp_path
+    ) -> None:
+        from torch.utils.data import DataLoader
+
+        from mqs_molecule_generation.training.vae_trainer import VAETrainer, build_collate_fn
+
+        smiles = ["CCO", "c1ccccc1", "CC(=O)O", "CCN", "CCC"] * 4
+        collate = build_collate_fn(tokenizer, device=torch.device("cpu"))
+        loader = DataLoader(smiles, batch_size=5, shuffle=True, collate_fn=collate)
+
+        csv_path = tmp_path / "history.csv"
+        config = TrainerConfig(lr_n_period=4, lr_n_restarts=1, batch_size=5)
+        trainer = VAETrainer(config)
+        trainer.fit(model, loader, csv_path=csv_path)
+
+        rows = csv_path.read_text().strip().split("\n")
+        assert len(rows) == 1 + 4  # header + 4 epochs (no val_loader)
+        assert rows[0] == "epoch,mode,kl_weight,lr,kl_loss,recon_loss,loss"
+        assert all(",train," in row for row in rows[1:])
+
+    def test_csv_log_has_two_rows_per_epoch_with_val(
+        self, torch, model, tokenizer, tmp_path
+    ) -> None:
+        from torch.utils.data import DataLoader
+
+        from mqs_molecule_generation.training.vae_trainer import VAETrainer, build_collate_fn
+
+        smiles = ["CCO", "c1ccccc1", "CC(=O)O", "CCN", "CCC"] * 4
+        collate = build_collate_fn(tokenizer, device=torch.device("cpu"))
+        train_loader = DataLoader(smiles, batch_size=5, shuffle=True, collate_fn=collate)
+        val_loader = DataLoader(smiles[:5], batch_size=5, shuffle=False, collate_fn=collate)
+
+        csv_path = tmp_path / "history.csv"
+        config = TrainerConfig(lr_n_period=3, lr_n_restarts=1, batch_size=5)
+        trainer = VAETrainer(config)
+        trainer.fit(model, train_loader, val_loader, csv_path=csv_path)
+
+        rows = csv_path.read_text().strip().split("\n")
+        assert len(rows) == 1 + 2 * 3  # header + 3 epochs x (train + eval)
+
+    def test_csv_creates_parent_directory(self, torch, model, tokenizer, tmp_path) -> None:
+        from torch.utils.data import DataLoader
+
+        from mqs_molecule_generation.training.vae_trainer import VAETrainer, build_collate_fn
+
+        smiles = ["CCO", "c1ccccc1", "CC(=O)O", "CCN", "CCC"] * 4
+        collate = build_collate_fn(tokenizer, device=torch.device("cpu"))
+        loader = DataLoader(smiles, batch_size=5, shuffle=True, collate_fn=collate)
+
+        csv_path = tmp_path / "nested" / "dir" / "history.csv"
+        config = TrainerConfig(lr_n_period=2, lr_n_restarts=1, batch_size=5)
+        trainer = VAETrainer(config)
+        trainer.fit(model, loader, csv_path=csv_path)
+        assert csv_path.exists()
+
+    def test_log_every_prints_expected_number_of_lines(
+        self, torch, model, tokenizer, capsys
+    ) -> None:
+        from torch.utils.data import DataLoader
+
+        from mqs_molecule_generation.training.vae_trainer import VAETrainer, build_collate_fn
+
+        smiles = ["CCO", "c1ccccc1", "CC(=O)O", "CCN", "CCC"] * 4
+        collate = build_collate_fn(tokenizer, device=torch.device("cpu"))
+        loader = DataLoader(smiles, batch_size=5, shuffle=True, collate_fn=collate)
+
+        config = TrainerConfig(lr_n_period=6, lr_n_restarts=1, batch_size=5)
+        trainer = VAETrainer(config)
+        trainer.fit(model, loader, log_every=2)
+
+        out = capsys.readouterr().out
+        printed_lines = [line for line in out.splitlines() if line.startswith("epoch ")]
+        # epochs 0, 2, 4 (log_every=2 over 6 epochs) -> 3 printed lines
+        assert len(printed_lines) == 3
+
+    def test_log_every_disabled_prints_no_lines(self, torch, model, tokenizer, capsys) -> None:
+        from torch.utils.data import DataLoader
+
+        from mqs_molecule_generation.training.vae_trainer import VAETrainer, build_collate_fn
+
+        smiles = ["CCO", "c1ccccc1", "CC(=O)O", "CCN", "CCC"] * 4
+        collate = build_collate_fn(tokenizer, device=torch.device("cpu"))
+        loader = DataLoader(smiles, batch_size=5, shuffle=True, collate_fn=collate)
+
+        config = TrainerConfig(lr_n_period=3, lr_n_restarts=1, batch_size=5)
+        trainer = VAETrainer(config)
+        trainer.fit(model, loader, log_every=0)
+
+        out = capsys.readouterr().out
+        printed_lines = [line for line in out.splitlines() if line.startswith("epoch ")]
+        assert len(printed_lines) == 0
+
+    def test_printed_line_contains_key_metrics(self, torch, model, tokenizer, capsys) -> None:
+        from torch.utils.data import DataLoader
+
+        from mqs_molecule_generation.training.vae_trainer import VAETrainer, build_collate_fn
+
+        smiles = ["CCO", "c1ccccc1", "CC(=O)O", "CCN", "CCC"] * 4
+        collate = build_collate_fn(tokenizer, device=torch.device("cpu"))
+        loader = DataLoader(smiles, batch_size=5, shuffle=True, collate_fn=collate)
+
+        config = TrainerConfig(lr_n_period=2, lr_n_restarts=1, batch_size=5)
+        trainer = VAETrainer(config)
+        trainer.fit(model, loader, log_every=1)
+
+        out = capsys.readouterr().out
+        first_line = next(line for line in out.splitlines() if line.startswith("epoch "))
+        for field in ("loss=", "kl_loss=", "recon_loss=", "kl_weight=", "lr="):
+            assert field in first_line

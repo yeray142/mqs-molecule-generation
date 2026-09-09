@@ -115,6 +115,46 @@ class TestEncodeDecode:
         assert tok.decode(tok.encode("")) == ""
 
 
+class TestSaveLoad:
+    def test_load_reproduces_encode_decode(self, tmp_path: Path) -> None:
+        tok = SmilesTokenizer.from_data(CANONICAL_TEST_SMILES)
+        path = tmp_path / "vocab.json"
+        tok.save(path)
+        loaded = SmilesTokenizer.load(path)
+
+        smi = CANONICAL_TEST_SMILES[0]
+        assert loaded.encode(smi) == tok.encode(smi)
+        assert loaded.decode(tok.encode(smi)) == smi
+
+    def test_load_preserves_vocab_size_and_special_indices(self, tmp_path: Path) -> None:
+        tok = SmilesTokenizer.from_data(CANONICAL_TEST_SMILES)
+        path = tmp_path / "vocab.json"
+        tok.save(path)
+        loaded = SmilesTokenizer.load(path)
+
+        assert loaded.vocab_size == tok.vocab_size
+        assert loaded.pad_idx == tok.pad_idx
+        assert loaded.unk_idx == tok.unk_idx
+        assert loaded.bos_idx == tok.bos_idx
+        assert loaded.eos_idx == tok.eos_idx
+
+    def test_load_gives_identical_char_to_idx(self, tmp_path: Path) -> None:
+        tok = SmilesTokenizer.from_data(CANONICAL_TEST_SMILES)
+        path = tmp_path / "vocab.json"
+        tok.save(path)
+        loaded = SmilesTokenizer.load(path)
+        assert loaded.char_to_idx == tok.char_to_idx
+
+    def test_idx_to_char_keys_are_ints_not_strings(self, tmp_path: Path) -> None:
+        # JSON object keys are always strings; load() must convert idx keys
+        # back to int or every idx_to_char lookup during decode() would fail.
+        tok = SmilesTokenizer.from_data(CANONICAL_TEST_SMILES)
+        path = tmp_path / "vocab.json"
+        tok.save(path)
+        loaded = SmilesTokenizer.load(path)
+        assert all(isinstance(k, int) for k in loaded.idx_to_char)
+
+
 class TestRoundtripOnRepresentativeMolecules:
     """Real, RDKit-canonicalized molecules -- rings, stereo, E/Z, isotopes,
     fused/spiro systems, two-digit ring closures. Direct check of the

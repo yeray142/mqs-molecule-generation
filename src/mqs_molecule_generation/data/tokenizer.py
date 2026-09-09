@@ -28,6 +28,7 @@ sorted data characters rather than before.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -81,6 +82,26 @@ class SmilesTokenizer:
         """Build from a frozen ``.smi`` file (one SMILES per line)."""
         smiles_list = path.read_text().split()
         return cls.from_data(smiles_list)
+
+    def save(self, path: Path) -> None:
+        """Persist the exact vocabulary as JSON.
+
+        The vocabulary is data-dependent (built from whatever SMILES
+        ``from_data`` saw), so a model checkpoint's embedding weights only
+        line up with the RIGHT characters if the SAME char_to_idx mapping is
+        used to reload it. Re-deriving the tokenizer from a `.smi` file later
+        is only safe if that file is byte-identical to what was used at
+        training time -- saving it alongside the checkpoint removes that
+        fragile assumption entirely.
+        """
+        path.write_text(json.dumps(self.char_to_idx))
+
+    @classmethod
+    def load(cls, path: Path) -> SmilesTokenizer:
+        """Load a vocabulary saved by :meth:`save`."""
+        char_to_idx = json.loads(path.read_text())
+        idx_to_char = {i: c for c, i in char_to_idx.items()}
+        return cls(char_to_idx=char_to_idx, idx_to_char=idx_to_char)
 
     def encode(self, smiles: str, add_bos: bool = False, add_eos: bool = False) -> list[int]:
         """Convert a SMILES string to a list of token indices.

@@ -148,14 +148,11 @@ class VAE(nn.Module):
         recon_loss = self.forward_decoder(x, z)
         return kl_loss, recon_loss
 
-    def forward_encoder(self, x: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
-        """Encode x -> z ~ q(z|x), plus the KL term against N(0, I).
+    def _encode_stats(self, x: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        """Shared encoder forward pass, up to (mu, logvar).
 
-        Args:
-            x: List of 1-D long tensors (token ids), one per SMILES.
-
-        Returns:
-            (z, kl_loss): z has shape (batch, d_z); kl_loss is a scalar.
+        Used by both forward_encoder (adds sampling + KL) and encode_mu
+        (deterministic point estimate).
         """
         embedded = [self.x_emb(i_x) for i_x in x]
         packed = nn.utils.rnn.pack_sequence(embedded, enforce_sorted=False)
@@ -165,12 +162,39 @@ class VAE(nn.Module):
         h = h[-(1 + int(self.encoder_rnn.bidirectional)) :]
         h = torch.cat(h.split(1), dim=-1).squeeze(0)
 
-        mu, logvar = self.q_mu(h), self.q_logvar(h)
+        return self.q_mu(h), self.q_logvar(h)
+
+    def forward_encoder(self, x: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode x -> z ~ q(z|x), plus the KL term against N(0, I).
+
+        Args:
+            x: List of 1-D long tensors (token ids), one per SMILES.
+
+        Returns:
+            (z, kl_loss): z has shape (batch, d_z); kl_loss is a scalar.
+        """
+        mu, logvar = self._encode_stats(x)
         eps = torch.randn_like(mu)
         z = mu + (logvar / 2).exp() * eps
 
         kl_loss = 0.5 * (logvar.exp() + mu**2 - 1 - logvar).sum(1).mean()
         return z, kl_loss
+
+    def encode_mu(self, x: list[torch.Tensor]) -> torch.Tensor:
+        """Deterministic latent point for x: the MEAN of q(z|x), no sampling.
+
+        Useful for reconstruction-fidelity checks and any other case where a
+        single, repeatable latent point is wanted rather than a stochastic
+        draw from the approximate posterior (which forward_encoder returns).
+
+        Args:
+            x: List of 1-D long tensors (token ids), one per SMILES.
+
+        Returns:
+            mu, shape (batch, d_z).
+        """
+        mu, _ = self._encode_stats(x)
+        return mu
 
     def forward_decoder(self, x: list[torch.Tensor], z: torch.Tensor) -> torch.Tensor:
         """Decode z (conditioned on x for teacher forcing) -> reconstruction loss.
@@ -220,6 +244,7 @@ class VAE(nn.Module):
         max_len: int = 100,
         z: torch.Tensor | None = None,
         temp: float = 1.0,
+        greedy: bool = False,
     ) -> list[str]:
         """Autoregressively decode `n_batch` SMILES strings, ported from MOSES's VAE.sample.
 
@@ -227,7 +252,11 @@ class VAE(nn.Module):
             n_batch: Number of SMILES to generate.
             max_len: Maximum sequence length before truncating.
             z: (n_batch, d_z) latent vectors, or None to sample from the prior.
-            temp: Softmax temperature (lower = more greedy).
+            temp: Softmax temperature (lower = more greedy). Ignored if greedy=True.
+            greedy: If True, take argmax at every step instead of sampling from
+                the softmax (torch.multinomial) -- deterministic given z, useful
+                for reconstruction-fidelity checks where "most likely decode"
+                matters more than exploring the output distribution.
 
         Returns:
             Generated SMILES strings (BOS/EOS stripped, per tokenizer.decode's default).
@@ -252,9 +281,13 @@ class VAE(nn.Module):
 
                 o, h = self.decoder_rnn(decoder_input, h)
                 logits = self.decoder_fc(o.squeeze(1))
-                probs = F.softmax(logits / temp, dim=-1)
 
-                w = torch.multinomial(probs, 1)[:, 0]
+                if greedy:
+                    w = torch.argmax(logits, dim=-1)
+                else:
+                    probs = F.softmax(logits / temp, dim=-1)
+                    w = torch.multinomial(probs, 1)[:, 0]
+
                 x[~eos_mask, i] = w[~eos_mask]
                 newly_finished = ~eos_mask & (w == self.eos)
                 end_pads[newly_finished] = i + 1

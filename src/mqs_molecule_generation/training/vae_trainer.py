@@ -26,18 +26,30 @@ This module needs torch importable just to be imported (subclassing
 LRScheduler). KLAnnealer/TrainerConfig/EpochMetrics, which don't need torch
 at all, live in trainer_config.py instead, so they stay usable without torch
 installed.
+
+``fit()`` reports every epoch's loss/kl_loss/recon_loss/kl_weight/lr two
+ways: live, in the tqdm progress bar's postfix (via ``pbar.set_postfix``,
+which updates in place rather than scrolling); and, every ``log_every``
+epochs (default: every epoch), as a permanent printed line via
+``tqdm.write`` (not plain ``print``, which would otherwise visually break
+the progress bar). Pass ``csv_path`` to also persist every epoch's full
+metrics as CSV rows, written incrementally as training proceeds -- so a
+convergence curve is still recoverable even if a long run is interrupted,
+and so it can be plotted afterward rather than only read off scrolled
+terminal output.
 """
 
 from __future__ import annotations
 
+import csv
 import math
+from pathlib import Path
 
 import torch
 from torch import optim
 from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
-
 from tqdm import tqdm
 
 from mqs_molecule_generation.data.tokenizer import SmilesTokenizer
@@ -175,8 +187,32 @@ class VAETrainer:
         val_loader: DataLoader | None = None,
         checkpoint_fn=None,
         checkpoint_every: int = 0,
+        log_every: int = 1,
+        csv_path: Path | None = None,
     ) -> list[EpochMetrics]:
-        """Train for config.n_epoch epochs. Returns per-epoch metrics history."""
+        """Train for config.n_epoch epochs. Returns per-epoch metrics history.
+
+        Args:
+            model: The VAE to train.
+            train_loader: Training batches.
+            val_loader: Optional validation batches, evaluated once per epoch
+                (no gradient step) using that epoch's kl_weight.
+            checkpoint_fn: Optional ``(model, epoch) -> None`` called every
+                ``checkpoint_every`` epochs.
+            checkpoint_every: See above; 0 disables checkpointing.
+            log_every: Print a full metrics line via ``tqdm.write`` every
+                this many epochs (default: every epoch). Set higher than
+                ``config.n_epoch`` to disable printed lines entirely and
+                keep only the live progress-bar postfix. The live postfix
+                itself always updates every epoch regardless of this value.
+            csv_path: If given, write every epoch's metrics (both train and,
+                if present, eval rows) as CSV, flushed after every row so
+                partial results survive an interrupted run.
+
+        Returns:
+            One EpochMetrics per epoch (two per epoch if val_loader is given:
+            train then eval).
+        """
         n_epoch = self.config.n_epoch
         optimizer = optim.Adam(self._optim_params(model), lr=self.config.lr_start)
         kl_annealer = KLAnnealer(
@@ -186,18 +222,85 @@ class VAETrainer:
             optimizer, self.config.lr_n_period, self.config.lr_n_mult, self.config.lr_end
         )
 
+        csv_file = None
+        csv_writer = None
+        if csv_path is not None:
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
+            csv_file = csv_path.open("w", newline="")
+            csv_writer = csv.DictWriter(
+                csv_file,
+                fieldnames=["epoch", "mode", "kl_weight", "lr", "kl_loss", "recon_loss", "loss"],
+            )
+            csv_writer.writeheader()
+
         history: list[EpochMetrics] = []
-        model.zero_grad()
-        for epoch in tqdm(range(n_epoch)):
-            kl_weight = kl_annealer(epoch)
-            history.append(self._run_epoch(model, epoch, train_loader, kl_weight, optimizer))
+        try:
+            model.zero_grad()
+            pbar = tqdm(range(n_epoch))
+            for epoch in pbar:
+                kl_weight = kl_annealer(epoch)
+                train_metrics = self._run_epoch(model, epoch, train_loader, kl_weight, optimizer)
+                history.append(train_metrics)
 
-            if val_loader is not None:
-                history.append(self._run_epoch(model, epoch, val_loader, kl_weight, None))
+                val_metrics = None
+                if val_loader is not None:
+                    val_metrics = self._run_epoch(model, epoch, val_loader, kl_weight, None)
+                    history.append(val_metrics)
 
-            if checkpoint_fn is not None and checkpoint_every > 0 and epoch % checkpoint_every == 0:
-                checkpoint_fn(model, epoch)
+                postfix = {
+                    "loss": f"{train_metrics.loss:.4f}",
+                    "kl": f"{train_metrics.kl_loss:.4f}",
+                    "recon": f"{train_metrics.recon_loss:.4f}",
+                    "kl_w": f"{kl_weight:.4f}",
+                    "lr": f"{train_metrics.lr:.2e}",
+                }
+                if val_metrics is not None:
+                    postfix["val_loss"] = f"{val_metrics.loss:.4f}"
+                pbar.set_postfix(postfix)
 
-            lr_annealer.step()
+                if log_every > 0 and epoch % log_every == 0:
+                    line = (
+                        f"epoch {epoch:>5d}/{n_epoch}  loss={train_metrics.loss:.4f}  "
+                        f"kl_loss={train_metrics.kl_loss:.4f}  "
+                        f"recon_loss={train_metrics.recon_loss:.4f}  "
+                        f"kl_weight={kl_weight:.4f}  lr={train_metrics.lr:.2e}"
+                    )
+                    if val_metrics is not None:
+                        line += (
+                            f"  | val_loss={val_metrics.loss:.4f}  "
+                            f"val_kl={val_metrics.kl_loss:.4f}  "
+                            f"val_recon={val_metrics.recon_loss:.4f}"
+                        )
+                    tqdm.write(line)
+
+                if csv_writer is not None:
+                    rows = (train_metrics, *((val_metrics,) if val_metrics is not None else ()))
+                    for m in rows:
+                        csv_writer.writerow(
+                            {
+                                "epoch": m.epoch,
+                                "mode": m.mode,
+                                "kl_weight": m.kl_weight,
+                                "lr": m.lr,
+                                "kl_loss": m.kl_loss,
+                                "recon_loss": m.recon_loss,
+                                "loss": m.loss,
+                            }
+                        )
+                    csv_file.flush()
+
+                if (
+                    checkpoint_fn is not None
+                    and checkpoint_every > 0
+                    and epoch % checkpoint_every == 0
+                ):
+                    checkpoint_fn(model, epoch)
+
+                lr_annealer.step()
+        finally:
+            if csv_file is not None:
+                csv_file.close()
+
+        return history
 
         return history

@@ -213,3 +213,36 @@ class TestVAEModule:
         samples = model.sample(n_batch=3, max_len=20)
         assert len(samples) == 3
         assert all(isinstance(s, str) for s in samples)
+
+    def test_encode_mu_is_deterministic(self, torch, tokenizer) -> None:
+        from mqs_molecule_generation.models.vae import VAE, VAEConfig
+
+        model = VAE(tokenizer, VAEConfig.nominal(d_z=10))
+        model.eval()
+        x = [torch.tensor(tokenizer.encode("CCO", add_bos=True, add_eos=True), dtype=torch.long)]
+        mu1 = model.encode_mu(x)
+        mu2 = model.encode_mu(x)
+        assert torch.equal(mu1, mu2)  # no sampling involved, must be bit-identical
+
+    def test_encode_mu_differs_from_stochastic_z(self, torch, tokenizer) -> None:
+        from mqs_molecule_generation.models.vae import VAE, VAEConfig
+
+        model = VAE(tokenizer, VAEConfig.nominal(d_z=10))
+        model.eval()
+        x = [torch.tensor(tokenizer.encode("CCO", add_bos=True, add_eos=True), dtype=torch.long)]
+        mu = model.encode_mu(x)
+        z, _ = model.forward_encoder(x)
+        # Not a strict guarantee in general (eps could be ~0), but with a
+        # freshly-initialised model logvar won't be so negative that this
+        # flakes in practice.
+        assert not torch.equal(mu, z)
+
+    def test_greedy_sample_is_deterministic_given_z(self, torch, tokenizer) -> None:
+        from mqs_molecule_generation.models.vae import VAE, VAEConfig
+
+        model = VAE(tokenizer, VAEConfig.nominal(d_z=10))
+        model.eval()
+        z = model.sample_z_prior(n_batch=1)
+        out1 = model.sample(n_batch=1, max_len=20, z=z, greedy=True)
+        out2 = model.sample(n_batch=1, max_len=20, z=z, greedy=True)
+        assert out1 == out2  # argmax decoding, no randomness once z is fixed
