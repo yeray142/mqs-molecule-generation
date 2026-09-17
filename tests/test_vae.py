@@ -142,7 +142,26 @@ class TestVAEModule:
         # correctness for WHATEVER vocab size a real tokenizer produces.
         return SmilesTokenizer.from_data(["CCO", "c1ccccc1", "CC(=O)O", "CCN", "[13CH4]"])
 
-    def test_param_count_matches_formula_nominal(self, torch, tokenizer) -> None:
+    @pytest.mark.parametrize("d_z", [10, 20, 30])
+    @pytest.mark.parametrize("scenario", ["nominal", "tuned"])
+    def test_infer_latent_dim_matches_construction(self, torch, tokenizer, d_z, scenario) -> None:
+        from mqs_molecule_generation.models.vae import VAE, VAEConfig, infer_latent_dim
+
+        config = VAEConfig.nominal(d_z=d_z) if scenario == "nominal" else VAEConfig.tuned(d_z=d_z)
+        model = VAE(tokenizer, config)
+        assert infer_latent_dim(model.state_dict()) == d_z
+
+    def test_infer_latent_dim_survives_save_and_load_roundtrip(
+        self, torch, tokenizer, tmp_path
+    ) -> None:
+        from mqs_molecule_generation.models.vae import VAE, VAEConfig, infer_latent_dim
+
+        model = VAE(tokenizer, VAEConfig.nominal(d_z=20))
+        path = tmp_path / "model.pt"
+        torch.save(model.state_dict(), path)
+        loaded = torch.load(path, map_location="cpu")
+        assert infer_latent_dim(loaded) == 20
+
         from mqs_molecule_generation.models.vae import VAE, VAEConfig
 
         config = VAEConfig.nominal(d_z=10)
@@ -223,6 +242,46 @@ class TestVAEModule:
         mu1 = model.encode_mu(x)
         mu2 = model.encode_mu(x)
         assert torch.equal(mu1, mu2)  # no sampling involved, must be bit-identical
+
+    def test_logvar_is_clamped_against_pathological_weights(self, torch, tokenizer) -> None:
+        # Simulates the exact failure mode observed during real tuned-scenario
+        # training: q_logvar's weights driven to extreme values (here, forced
+        # directly rather than via many unstable epochs) must not produce an
+        # unbounded logvar -- forward_encoder's KL term would otherwise
+        # explode (0.5*(exp(logvar) - logvar + ...) diverges as
+        # logvar -> +-inf).
+        from mqs_molecule_generation.models.vae import LOGVAR_MAX, LOGVAR_MIN, VAE, VAEConfig
+
+        model = VAE(tokenizer, VAEConfig.nominal(d_z=10))
+        with torch.no_grad():
+            model.q_logvar.weight.fill_(1000.0)
+            model.q_logvar.bias.fill_(1000.0)
+        model.eval()
+
+        x = [torch.tensor(tokenizer.encode("CCO", add_bos=True, add_eos=True), dtype=torch.long)]
+        _, logvar = model._encode_stats(x)
+        assert torch.all(logvar <= LOGVAR_MAX)
+        assert torch.all(logvar >= LOGVAR_MIN)
+
+    def test_clamped_logvar_keeps_kl_loss_finite_and_bounded(self, torch, tokenizer) -> None:
+        from mqs_molecule_generation.models.vae import VAE, VAEConfig
+
+        model = VAE(tokenizer, VAEConfig.nominal(d_z=10))
+        with torch.no_grad():
+            model.q_logvar.weight.fill_(1000.0)
+            model.q_logvar.bias.fill_(1000.0)
+        model.eval()
+
+        x = [
+            torch.tensor(tokenizer.encode(s, add_bos=True, add_eos=True), dtype=torch.long)
+            for s in ("CCO", "c1ccccc1")
+        ]
+        _, kl_loss = model.forward_encoder(x)
+        assert torch.isfinite(kl_loss)
+        # With logvar clamped to at most 2.0 per dimension (d_z=10), KL per
+        # sample is bounded well under 1000 -- nowhere near the observed
+        # real-training blowup (kl_loss=5587).
+        assert kl_loss.item() < 1000.0
 
     def test_encode_mu_differs_from_stochastic_z(self, torch, tokenizer) -> None:
         from mqs_molecule_generation.models.vae import VAE, VAEConfig

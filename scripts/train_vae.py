@@ -15,13 +15,21 @@ This is real training: expect it to take a non-trivial amount of wall-clock
 time (the paper reports 9m-53m on an A100 GPU for 100-1000 epochs; CPU-only
 will be much slower). Writes:
 
-  - results/vae_runs/n_ep_<N>_seed_<S>.json    -- metrics for check_table8.py
-  - results/vae_runs/n_ep_<N>_seed_<S>.pt      -- model checkpoint
-  - results/vae_runs/n_ep_<N>_seed_<S>.vocab.json -- exact tokenizer vocabulary,
+  - results/vae_runs/<scenario>_n_ep_<N>_seed_<S>.json    -- metrics for check_table8.py
+  - results/vae_runs/<scenario>_n_ep_<N>_seed_<S>.pt      -- FINAL model checkpoint
+  - results/vae_runs/<scenario>_n_ep_<N>_seed_<S>.epoch<E>.pt -- INTERMEDIATE
+    checkpoints (see --checkpoint-every) -- important insurance: training can
+    destabilise well after reaching a good point (observed directly in the
+    tuned scenario: smooth convergence for ~90 epochs, then a KL-explosion
+    feedback loop with no recovery over the following ~100+ epochs -- see
+    docs/paper_mapping.md). Without these, only the possibly-worse final
+    epoch's state would be recoverable.
+  - results/vae_runs/<scenario>_n_ep_<N>_seed_<S>.vocab.json -- exact tokenizer vocabulary,
     needed to correctly reload the checkpoint later (scripts/reconstruct.py)
-  - results/vae_runs/n_ep_<N>_seed_<S>.history.csv -- per-epoch loss/kl_loss/
+  - results/vae_runs/<scenario>_n_ep_<N>_seed_<S>.history.csv -- per-epoch loss/kl_loss/
     recon_loss/kl_weight/lr (train and, since a val split is always passed
-    here, eval rows too), for plotting convergence after the fact
+    here, eval rows too), for plotting convergence after the fact -- the
+    fastest way to spot the instability above before it wastes more compute
 
 By default every epoch's metrics are also printed live during training (via
 the tqdm progress bar's postfix) and as a permanent line to stdout -- use
@@ -159,6 +167,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--n-epochs", type=int, required=True, choices=[100, 250, 800, 1000])
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--scenario",
+        choices=["nominal", "tuned"],
+        default="nominal",
+        help="paper Table 1 scenario (default nominal, matching the Table 8 study)",
+    )
     parser.add_argument("--latent-dim", type=int, default=10)
     parser.add_argument("--processed-dir", type=Path, default=Path("data/processed"))
     parser.add_argument("--output-dir", type=Path, default=Path("results/vae_runs"))
@@ -178,6 +192,18 @@ def main(argv: list[str] | None = None) -> int:
         default=1,
         help="print full metrics every N epochs (default: every epoch); 0 disables printed lines",
     )
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=None,
+        help=(
+            "save an intermediate checkpoint every N epochs (default: ~20 "
+            "checkpoints spread across the run); 0 disables. Cheap insurance "
+            "against training destabilising after a good point is reached -- "
+            "see docs/paper_mapping.md for why this matters for the tuned "
+            "scenario specifically"
+        ),
+    )
     args = parser.parse_args(argv)
 
     set_seed(args.seed)
@@ -189,14 +215,22 @@ def main(argv: list[str] | None = None) -> int:
     tokenizer = SmilesTokenizer.from_data(train_smiles)
     print(f"Tokenizer vocab size: {tokenizer.vocab_size}")
 
-    config = VAEConfig.nominal(d_z=args.latent_dim)
+    config = (
+        VAEConfig.nominal(d_z=args.latent_dim)
+        if args.scenario == "nominal"
+        else VAEConfig.tuned(d_z=args.latent_dim)
+    )
     model = VAE(tokenizer, config).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"VAE parameter count: {n_params:,}")
 
     elapsed = 0.0
     history = None
-    trainer_config = TrainerConfig.nominal(n_epochs=args.n_epochs)
+    trainer_config = (
+        TrainerConfig.nominal(n_epochs=args.n_epochs)
+        if args.scenario == "nominal"
+        else TrainerConfig.tuned(n_epochs=args.n_epochs)
+    )
 
     if args.checkpoint_in is not None:
         print(f"Loading checkpoint from {args.checkpoint_in} (skipping training)")
@@ -209,13 +243,32 @@ def main(argv: list[str] | None = None) -> int:
         trainer = VAETrainer(trainer_config)
         print(
             f"Training for {trainer_config.n_epoch} epochs "
-            f"(nominal, lr={trainer_config.lr_start})..."
+            f"({args.scenario}, lr={trainer_config.lr_start})..."
         )
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        csv_path = args.output_dir / f"n_ep_{args.n_epochs}_seed_{args.seed}.history.csv"
+        run_name = f"{args.scenario}_n_ep_{args.n_epochs}_seed_{args.seed}"
+        csv_path = args.output_dir / f"{run_name}.history.csv"
+
+        checkpoint_every = (
+            args.checkpoint_every
+            if args.checkpoint_every is not None
+            else max(1, trainer_config.n_epoch // 20)
+        )
+
+        def save_checkpoint(model_to_save, epoch: int) -> None:
+            path = args.output_dir / f"{run_name}.epoch{epoch:04d}.pt"
+            torch.save(model_to_save.state_dict(), path)
+            print(f"  (checkpoint saved: {path})")
+
         start = time.time()
         history = trainer.fit(
-            model, train_loader, val_loader, log_every=args.log_every, csv_path=csv_path
+            model,
+            train_loader,
+            val_loader,
+            log_every=args.log_every,
+            csv_path=csv_path,
+            checkpoint_fn=save_checkpoint if checkpoint_every > 0 else None,
+            checkpoint_every=checkpoint_every,
         )
         elapsed = time.time() - start
         print(f"Training finished in {elapsed / 60:.1f} min")
@@ -276,16 +329,18 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = args.output_dir / f"n_ep_{args.n_epochs}_seed_{args.seed}.json"
+    out_path = args.output_dir / f"{args.scenario}_n_ep_{args.n_epochs}_seed_{args.seed}.json"
     out_path.write_text(json.dumps(results, indent=2))
     print(f"\nWrote {out_path}")
 
     if args.checkpoint_in is None:
-        ckpt_path = args.output_dir / f"n_ep_{args.n_epochs}_seed_{args.seed}.pt"
+        ckpt_path = args.output_dir / f"{args.scenario}_n_ep_{args.n_epochs}_seed_{args.seed}.pt"
         torch.save(model.state_dict(), ckpt_path)
         print(f"Wrote {ckpt_path}")
 
-        vocab_path = args.output_dir / f"n_ep_{args.n_epochs}_seed_{args.seed}.vocab.json"
+        vocab_path = (
+            args.output_dir / f"{args.scenario}_n_ep_{args.n_epochs}_seed_{args.seed}.vocab.json"
+        )
         tokenizer.save(vocab_path)
         print(f"Wrote {vocab_path}")
 

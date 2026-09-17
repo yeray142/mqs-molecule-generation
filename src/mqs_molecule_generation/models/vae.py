@@ -32,6 +32,30 @@ from torch import nn
 
 from mqs_molecule_generation.data.tokenizer import SmilesTokenizer
 
+#: Clamp bounds for encoder logvar, applied in _encode_stats. NOT part of
+#: MOSES's original code -- a deliberate numerical-stability addition.
+#:
+#: The KL term is 0.5*(exp(logvar) + mu^2 - 1 - logvar). With kl_weight
+#: staying small for most of training (kl_w_end=0.05, reached only near the
+#: final epoch), there is very little gradient pressure keeping logvar
+#: bounded. Reconstruction loss actively rewards driving logvar very
+#: negative (a tighter posterior makes z closer to a deterministic function
+#: of x, which is "cheating" toward better reconstruction) -- but as
+#: logvar -> -inf, the -logvar term in the KL formula diverges too, and nothing
+#: is stopping it. Observed directly during tuned-scenario training (paper
+#: hyperparameters: q_d_h=512, lr starting at 1e-3, over 3x nominal's 3e-4):
+#: kl_loss climbing smoothly for ~90 epochs, then a runaway feedback loop
+#: driving logvar increasingly negative, culminating in kl_loss jumping from
+#: ~18 to ~5587 in a single epoch with no recovery over the following ~100
+#: epochs. Clamping keeps exp(logvar) and -logvar bounded regardless of what
+#: the optimizer tries, without touching the paper's own stated
+#: hyperparameters (lr, kl_w_end) at all. Bounds are generous relative to
+#: healthy training (observed kl_loss in the 5-33 range implies per-
+#: dimension logvar values far inside this window) -- this only engages once
+#: something has already gone numerically wrong.
+LOGVAR_MIN = -20.0
+LOGVAR_MAX = 2.0
+
 
 @dataclass(frozen=True)
 class VAEConfig:
@@ -162,7 +186,8 @@ class VAE(nn.Module):
         h = h[-(1 + int(self.encoder_rnn.bidirectional)) :]
         h = torch.cat(h.split(1), dim=-1).squeeze(0)
 
-        return self.q_mu(h), self.q_logvar(h)
+        logvar = torch.clamp(self.q_logvar(h), min=LOGVAR_MIN, max=LOGVAR_MAX)
+        return self.q_mu(h), logvar
 
     def forward_encoder(self, x: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """Encode x -> z ~ q(z|x), plus the KL term against N(0, I).
@@ -294,3 +319,19 @@ class VAE(nn.Module):
                 eos_mask = eos_mask | newly_finished
 
             return [self.tokenizer.decode(x[i, : end_pads[i]].tolist()) for i in range(x.size(0))]
+
+
+def infer_latent_dim(state_dict: dict[str, torch.Tensor]) -> int:
+    """Read d_z off a checkpoint's own weights rather than trust a CLI flag.
+
+    q_mu.weight has shape (d_z, q_d_h * num_directions) regardless of
+    scenario (nominal/tuned differ in q_d_h, not d_z) or which latent
+    dimension the run used (10/20/30) -- its first dimension IS d_z,
+    unambiguously, for any valid checkpoint. Avoids a class of silent
+    mismatch: passing the wrong --latent-dim wouldn't necessarily crash
+    immediately (a too-small d_z is still a valid, just wrong, shape for
+    q_mu/q_logvar's construction), whereas reading it directly can't be
+    wrong for a checkpoint that was ever successfully saved by this
+    project's own VAE.
+    """
+    return state_dict["q_mu.weight"].shape[0]

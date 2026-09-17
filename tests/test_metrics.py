@@ -14,6 +14,7 @@ from mqs_molecule_generation.metrics.fractions import (
 )
 from mqs_molecule_generation.metrics.moses_metrics import (
     compute_property_report,
+    compute_significance_metrics,
     compute_wasserstein_report,
 )
 from mqs_molecule_generation.metrics.properties import (
@@ -238,3 +239,73 @@ class TestMosesMetricsIntegration:
         b = compute_property_report([ASPIRIN, ASPIRIN, ASPIRIN])
         w = compute_wasserstein_report(a, b)
         assert w.logp >= 0 and w.sa >= 0 and w.qed >= 0 and w.weight >= 0
+
+
+class TestComputeSignificanceMetrics:
+    """The 10-metric dict feeding Eq. 5 / Table 14 significance comparisons."""
+
+    def test_returns_all_ten_significance_keys(self) -> None:
+        from mqs_molecule_generation.metrics.significance import SIGNIFICANCE_METRICS
+
+        result = compute_significance_metrics(
+            generated_smiles=[ETHANOL, BENZENE, ASPIRIN],
+            reference_smiles=[ETHANOL, BENZENE],
+        )
+        assert set(result.keys()) == set(SIGNIFICANCE_METRICS.keys())
+
+    def test_values_are_finite_floats(self) -> None:
+        result = compute_significance_metrics(
+            generated_smiles=[ETHANOL, BENZENE, ASPIRIN, ETHANOL],
+            reference_smiles=[ETHANOL, BENZENE],
+        )
+        for name, value in result.items():
+            assert isinstance(value, float), name
+            assert value == value, name  # NaN check (NaN != NaN)
+
+    def test_fractions_are_bounded_zero_one(self) -> None:
+        result = compute_significance_metrics(
+            generated_smiles=[ETHANOL, BENZENE, ASPIRIN, "garbage", ETHANOL],
+            reference_smiles=[ETHANOL, BENZENE],
+        )
+        for name in ("eps_d", "eps_v", "eps_u", "novelty", "intdiv", "filters", "eps_logp"):
+            assert 0.0 <= result[name] <= 1.0, name
+
+    def test_novelty_all_seen_is_zero(self) -> None:
+        result = compute_significance_metrics(
+            generated_smiles=[ETHANOL, BENZENE],
+            reference_smiles=[ETHANOL, BENZENE, ASPIRIN],
+        )
+        assert result["novelty"] == pytest.approx(0.0)
+
+    def test_novelty_all_new_is_one(self) -> None:
+        result = compute_significance_metrics(
+            generated_smiles=[ASPIRIN],
+            reference_smiles=[ETHANOL, BENZENE],
+        )
+        assert result["novelty"] == pytest.approx(1.0)
+
+    def test_matches_independently_computed_values(self) -> None:
+        # Cross-check against the individual functions this composes, called
+        # directly -- not just "runs without crashing".
+        generated = [ETHANOL, BENZENE, ASPIRIN, ETHANOL]
+        reference = [ETHANOL, BENZENE]
+        result = compute_significance_metrics(generated, reference)
+
+        _, _, expected_eps_v = compute_validity(generated)
+        assert result["eps_v"] == pytest.approx(expected_eps_v)
+        assert result["eps_d"] == pytest.approx(distinct_fraction(generated))
+
+        valid = [s for s in generated if is_valid_smiles(s)]
+        assert result["eps_u"] == pytest.approx(unique_fraction(valid))
+        assert result["novelty"] == pytest.approx(novelty_fraction(valid, reference))
+        assert result["intdiv"] == pytest.approx(compute_diversity(valid))
+
+    def test_weight_and_sa_are_minimized_scale_not_fractions(self) -> None:
+        # Sanity check these are raw property means, not accidentally routed
+        # through a 0-1 fraction helper.
+        result = compute_significance_metrics(
+            generated_smiles=[ASPIRIN, ASPIRIN],
+            reference_smiles=[ETHANOL],
+        )
+        assert result["weight"] > 1.0  # molecular weight, not a fraction
+        assert result["sa"] > 0.5  # SA score is roughly in [1, 10]

@@ -10,7 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from mqs_molecule_generation.data.filters import pass_rate as filters_pass_rate
 from mqs_molecule_generation.metrics.diversity import compute_diversity
+from mqs_molecule_generation.metrics.fractions import (
+    distinct_fraction,
+    novelty_fraction,
+    unique_fraction,
+)
 from mqs_molecule_generation.metrics.properties import (
     compute_logps_batch,
     compute_molecular_weights_batch,
@@ -107,3 +113,48 @@ def compute_wasserstein_report(
         qed=property_wasserstein_distance(reference.qed, sample.qed),
         weight=property_wasserstein_distance(reference.weight, sample.weight),
     )
+
+
+def compute_significance_metrics(
+    generated_smiles: list[str], reference_smiles: list[str]
+) -> dict[str, float]:
+    """The 10 metrics Eq. 5's significance comparison uses (paper §2.3, Table 14).
+
+    Keys match ``metrics.significance.SIGNIFICANCE_METRICS`` exactly, so the
+    result can be wrapped directly into ``MetricStat``s (one per seed, then
+    aggregated with ``MetricStat.from_samples``) and fed to
+    ``average_significance``. Shared by the VAE-reference evaluation and the
+    GAN evaluation scripts so both sides of the Z0 comparison run through the
+    identical computation -- important for the comparison to be meaningful,
+    not just convenient.
+
+    Args:
+        generated_smiles: Raw SMILES from the scenario being scored (VAE
+            prior-sampled, or GAN-generated-then-VAE-decoded).
+        reference_smiles: The training set, for the novelty check and the
+            distinct/unique fractions' denominators. NOT a second scenario
+            to compare against -- that comparison happens later, in
+            average_significance, using summary stats across seeds.
+
+    Returns:
+        dict with keys eps_d, eps_v, eps_u, novelty, intdiv, filters,
+        eps_logp, sa, qed, weight -- means/fractions, matching
+        SIGNIFICANCE_METRICS's maximize/minimize directions.
+    """
+    _, _, eps_v = compute_validity(generated_smiles)
+    valid_smiles = [s for s in generated_smiles if is_valid_smiles(s)]
+
+    report = compute_property_report(generated_smiles)
+
+    return {
+        "eps_d": distinct_fraction(generated_smiles),
+        "eps_v": eps_v,
+        "eps_u": unique_fraction(valid_smiles),
+        "novelty": novelty_fraction(valid_smiles, reference_smiles),
+        "intdiv": report.int_div,
+        "filters": filters_pass_rate(valid_smiles, "moses_native"),
+        "eps_logp": report.logp_fraction,
+        "sa": report.mean_sa,
+        "qed": report.mean_qed,
+        "weight": report.mean_weight,
+    }
