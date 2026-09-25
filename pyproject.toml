@@ -16,6 +16,7 @@ core = [
     "click>=8.1.0",
     "tqdm>=4.66.0",
     "gitpython>=3.1.0",
+    "pydantic>=2.13.5",
 ]
 
 [project.optional-dependencies]
