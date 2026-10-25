@@ -22,6 +22,12 @@ paper's prose, both confirmed against MOSES's own trainer.py:
   of fake latents (not reusing the discriminator step's fakes). n_critic=5
   for "nominal", 1 for "tuned" -- see gan_trainer_config.py.
 
+Noise dimension (Phase 3): the classical Generator takes D_l-dimensional noise (MOSES
+builds it with no separate noise size). The quantum generator takes one noise
+component per QUBIT (Eq. 4), so ``noise_dim = n_qb``, which differs from D_l for dual
+readout. The trainer therefore asks the generator: ``generator.noise_dim`` if it has
+one, else ``config.latent_dim``. For the classical Generator nothing changes.
+
 One deliberate (not quirk-preserving) deviation from MOSES's literal code:
 fake latents are ``.detach()``ed before the discriminator's own loss/backward
 pass. MOSES's source doesn't show this explicitly, which would compute (and
@@ -47,12 +53,17 @@ from mqs_molecule_generation.models.classical_gan import Discriminator, Generato
 from mqs_molecule_generation.training.gan_trainer_config import GANEpochMetrics, GANTrainerConfig
 from mqs_molecule_generation.training.wgan_gp import critic_loss, generator_loss, gradient_penalty
 
-__all__ = ["GANEpochMetrics", "GANTrainer", "GANTrainerConfig", "sample_noise"]
+__all__ = ["GANEpochMetrics", "GANTrainer", "GANTrainerConfig", "noise_dim_of", "sample_noise"]
 
 
-def sample_noise(n_batch: int, latent_dim: int, device: torch.device) -> torch.Tensor:
+def sample_noise(n_batch: int, noise_dim: int, device: torch.device) -> torch.Tensor:
     """Uniform[-1, 1] noise, matching MOSES's Sampler.sample exactly (not Gaussian)."""
-    return torch.rand(n_batch, latent_dim, device=device) * 2 - 1
+    return torch.rand(n_batch, noise_dim, device=device) * 2 - 1
+
+
+def noise_dim_of(generator: torch.nn.Module, default: int) -> int:
+    """Noise size the generator expects: ``generator.noise_dim`` if defined, else ``default``."""
+    return int(getattr(generator, "noise_dim", default))
 
 
 class GANTrainer:
@@ -94,6 +105,13 @@ class GANTrainer:
         device = next(generator.parameters()).device
         real_latents = real_latents.to(device)
         n_real = real_latents.size(0)
+        noise_dim = noise_dim_of(generator, self.config.latent_dim)
+        out_dim = getattr(generator, "latent_dim", self.config.latent_dim)
+        if out_dim != real_latents.size(1):
+            raise ValueError(
+                f"generator outputs {out_dim}-dim latents but real latents are "
+                f"{real_latents.size(1)}-dim"
+            )
 
         optimizer_d = optim.Adam(
             discriminator.parameters(), lr=self.config.lr, betas=(self.config.b1, self.config.b2)
@@ -139,7 +157,7 @@ class GANTrainer:
 
                     # ---- Discriminator step (every batch) ----
                     optimizer_d.zero_grad()
-                    noise = sample_noise(batch_size, self.config.latent_dim, device)
+                    noise = sample_noise(batch_size, noise_dim, device)
                     fake_batch = generator(noise).detach()
 
                     real_validity = discriminator(real_batch)
@@ -156,7 +174,7 @@ class GANTrainer:
                     # ---- Generator step (every n_critic-th batch) ----
                     if batch_idx % self.config.n_critic == 0:
                         optimizer_g.zero_grad()
-                        noise = sample_noise(batch_size, self.config.latent_dim, device)
+                        noise = sample_noise(batch_size, noise_dim, device)
                         fake_batch = generator(noise)
                         fake_validity = discriminator(fake_batch)
                         g_loss = generator_loss(fake_validity)
