@@ -109,7 +109,7 @@ class TestSimpleAnsatzQASM:
         qasm = build_simple_ansatz_qasm(n_qb=2, n_l=1)
         assert qasm.startswith("OPENQASM 3.0")
         assert "qubit[2] q" in qasm
-        assert "ry angle_0 q[0]" in qasm
+        assert "ry(angle_0) q[0];" in qasm
 
     def test_simple_qasm_no_entanglement_last_layer(self) -> None:
         """Test simple ansatz has no CX after last layer."""
@@ -144,16 +144,15 @@ class TestBELAnsatzQASM:
         qasm = build_bel_ansatz_qasm(n_qb=2, n_l=1)
         assert qasm.startswith("OPENQASM 3.0")
         assert "qubit[2] q" in qasm
-        assert "ry bel_angle_0 q[0]" in qasm
+        assert "ry(bel_angle_0) q[0];" in qasm
 
     def test_bel_qasm_has_final_ry(self) -> None:
         """Test BEL ansatz has final RY per qubit."""
         n_qb, n_l = 2, 1
         qasm = build_bel_ansatz_qasm(n_qb, n_l)
-        lines = qasm.split("\n")
         # Final RY indices: for n_qb=2, n_l=1: bel_angle_10 and bel_angle_11
-        assert "ry bel_angle_10 q[0]" in qasm
-        assert "ry bel_angle_11 q[1]" in qasm
+        assert "ry(bel_angle_10) q[0];" in qasm
+        assert "ry(bel_angle_11) q[1];" in qasm
 
 
 class TestMakeAnsatzCircuit:
@@ -191,3 +190,25 @@ class TestMakeAnsatzCircuit:
         """Test ValueError for invalid ansatz type."""
         with pytest.raises(ValueError, match="Unknown ansatz"):
             make_ansatz_circuit(n_qb=2, n_l=1, ansatz_type="invalid")
+
+
+class TestQASMParses:
+    """Generated QASM must be accepted by the reference OpenQASM 3 parser.
+
+    The previous gate syntax (``ry angle_0 q[0];``) and ``float[32] x = x;``
+    declarations are rejected by the parser, so the string-matching tests above
+    alone would not catch an unparseable circuit.
+    """
+
+    @pytest.mark.parametrize("ansatz", ["simple", "bel"])
+    @pytest.mark.parametrize("n_qb,n_l", [(2, 1), (4, 2), (5, 2)])
+    def test_qasm_parses(self, n_qb: int, n_l: int, ansatz: str) -> None:
+        openqasm3 = pytest.importorskip("openqasm3")
+        qasm, _ = make_ansatz_circuit(n_qb, n_l, ansatz)
+        openqasm3.parse(qasm)
+
+    def test_old_gate_syntax_is_rejected(self) -> None:
+        openqasm3 = pytest.importorskip("openqasm3")
+        bad = 'OPENQASM 3.0;\ninclude "stdgates.inc";\nqubit[1] q;\nry angle_0 q[0];'
+        with pytest.raises(Exception):  # noqa: B017 - parser error class varies
+            openqasm3.parse(bad)

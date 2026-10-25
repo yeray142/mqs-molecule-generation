@@ -9,19 +9,6 @@ correct against the paper's own cited source code (MOSES) where the paper
 doesn't state enough to verify directly.** Nothing is marked DONE on the
 strength of "the file exists" alone — see *Verification methodology* below.
 
-> **Note on a previous version of this file.** An earlier draft of this
-> document (generated during initial scaffolding, before implementation
-> began) used a fabricated paper structure — "§3 Generator Architecture",
-> "§4 Discriminator & Training", "§5 Molecular Generation", "§6
-> Experiments", "§7 Conclusion" — none of which exist in the actual paper,
-> and listed several modules (`circuits/ansatz.py`, `training/losses.py`,
-> `adapters/pennylane_latent_style_adapter.py`, etc.) as DONE that were never
-> implemented in this workflow. That draft has been fully replaced by this
-> one. Lesson: a paper-section mapping is only as good as its grounding in
-> the actual fetched PDF text — it must never be filled in from a generic
-> template or a remembered paper structure, and "DONE" must never describe
-> planned/stubbed work.
-
 ## Real paper structure (verified against the fetched PDF)
 
 | Section | Topic |
