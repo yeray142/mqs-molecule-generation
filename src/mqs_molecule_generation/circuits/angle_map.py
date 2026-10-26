@@ -23,6 +23,14 @@ different circuits:
 
 The default is "literal" because it is what the paper prints, but the stated
 [0, 2pi] domain only holds for "shifted" / "wrapped".
+
+Status: CONFIRMED against the paper's Eq. 4, which prints
+``theta_{q,l,k} = 2 pi tanh(xi_q W_{qlk} + b_{qlk})``, one trainable W and one b per angle
+(hence N_params = 2 * n_angles) and one noise component xi_q per QUBIT. The surrounding
+prose says the angles lie in the domain [0, 2 pi], which that formula does not produce --
+tanh is signed, so the literal range is (-2 pi, 2 pi). The formula is taken as
+authoritative and is the ``literal`` default; ``shifted`` and ``wrapped`` implement the
+prose instead, for testing which reading reproduces the paper's numbers.
 """
 
 from __future__ import annotations

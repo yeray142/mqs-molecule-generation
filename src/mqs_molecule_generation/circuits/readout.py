@@ -20,8 +20,14 @@ from __future__ import annotations
 READOUTS = ("single", "dual")
 
 READOUT_STATUS = (
-    "Dimension rule from the paper. Z (single) and Z+X (dual) inferred from the authors' "
-    "earlier papers; not confirmed against this paper's text."
+    "CONFIRMED against the paper (Sec. 2.2.2). Single readout: 'one Pauli operator (usually "
+    "chosen as the Z operator) is measured for each qubit, so that a quantum generator with "
+    "n_qb qubits produces a latent vector of dimension n_qb'. Dual readout: 'we exploit the "
+    "non-commutativity of Pauli X and Pauli Z operators to use the same quantum circuit but "
+    "performing two independent measurements for each qubit', giving dimension 2*n_qb. The "
+    "ORDER of the 2*n_qb components (all Z, then all X) is this project's choice; the paper "
+    "does not state one, and any fixed order is equivalent up to a permutation of the latent "
+    "coordinates, which the VAE decoder sees as a relabelling."
 )
 
 

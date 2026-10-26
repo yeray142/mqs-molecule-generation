@@ -32,17 +32,31 @@ from dataclasses import dataclass
 
 LAYOUT_STATUS: dict[str, str] = {
     "simple": (
-        "UNVERIFIED gate order: retained from the original scaffold (RY per qubit per layer, "
-        "CX chain between layers). Only the angle count n_qb*n_l is confirmed from the paper's "
-        "text; Fig. 2 has not been checked."
+        "PARTIALLY VERIFIED against Fig. 2 (read directly from the PDF). Fig. 2 draws, per "
+        "qubit for its single layer: RY RZ RY RZ, then a CNOT staircase CX(0,1)...CX(n-2,n-1). "
+        "The staircase placement is now reproduced (after every layer). The FOUR rotations per "
+        "qubit per layer are NOT reproduced and cannot be: with Eq. 4's two trainable numbers "
+        "(W and b) per angle they would give 8*n_qb*n_l parameters, i.e. 80 for the nominal "
+        "n_qb=5, n_l=2, whereas every parameter count the paper prints for the simple ansatz "
+        "(20, 40, 40, 80, 40, 60 across Tables 4, 5 and the supplementary) equals 2*n_qb*n_l, "
+        "which admits exactly ONE parameterised rotation per qubit per layer. Figure 2 and the "
+        "paper's own parameter counts are mutually inconsistent; this implementation follows "
+        "the counts, since those are what the 'far fewer trainable parameters' claim rests on."
     ),
     "bel": (
-        "PROVISIONAL gate order: per layer, RY-RZ-RY-RZ on every qubit, then a ring of "
-        "parameterised controlled-RY (4 single-qubit + 1 controlled angle = 5 per qubit per "
-        "layer), then one final RY per qubit. Reconstructed from the authors' earlier "
-        "style-based qGAN papers and consistent with: 5*n_l+1 angles per qubit, the paper's "
-        "statement that controlled rotation gates are parameterised, and its 110-parameter "
-        "nominal count. Fig. 3 has not been checked."
+        "PARTIALLY VERIFIED against Fig. 3 (read directly from the PDF). Fig. 3 draws: H on "
+        "every qubit; then per layer RY RZ, an entangling block, RY RZ, a second entangling "
+        "block; plus (per the caption) a final RY per qubit. The leading Hadamard layer is now "
+        "reproduced. Two differences remain, both forced by the parameter counts: the figure's "
+        "entanglers are drawn as unparameterised controlled-Z (filled dot at BOTH ends, no "
+        "angle label), in a ladder (0,1),(1,2),(2,3),(3,4) and then a skip pattern "
+        "(0,2),(1,3),(2,4); this implementation instead uses ONE ring of n_qb parameterised "
+        "controlled-RY per layer. With unparameterised entanglers the figure gives "
+        "n_qb*(4*n_l+1) angles = 90 parameters for the nominal n_qb=5, n_l=2, but every count "
+        "the paper prints for BEL (110, 210, 220, 420, 620, 330) equals 2*n_qb*(5*n_l+1), "
+        "requiring a fifth parameterised angle per qubit per layer. A ring of n_qb controlled "
+        "rotations supplies exactly that, and the paper's text does say the controlled rotation "
+        "gates are parameterised, so this is the closest structure that satisfies both."
     ),
 }
 
@@ -52,7 +66,7 @@ class Gate:
     """One gate of an ansatz.
 
     Attributes:
-        name: "RY", "RZ", "CRY" (parameterised) or "CX" (fixed).
+        name: "RY", "RZ", "CRY" (parameterised) or "CX", "H" (fixed).
         wires: Qubits acted on; for CRY/CX it is (control, target).
         param: Index into the angle vector, or None for fixed gates.
         noise_qubit: The q of xi_q in Eq. 4 that feeds this angle (the qubit
@@ -65,19 +79,36 @@ class Gate:
     noise_qubit: int | None = None
 
 
-def simple_layout(n_qb: int, n_l: int) -> tuple[Gate, ...]:
-    """RY(theta_{l,q}) on every qubit each layer; CX chain between layers."""
+def simple_layout(
+    n_qb: int, n_l: int, *, entangle_after_last_layer: bool = True
+) -> tuple[Gate, ...]:
+    """RY(theta_{l,q}) on every qubit each layer, then a CX staircase.
+
+    Figure 2 (five qubits, ONE layer) draws the CNOT staircase
+    CX(0,1), CX(1,2), ..., CX(n-2,n-1) AFTER the rotations of that single layer, so a
+    one-layer simple circuit is entangled. ``entangle_after_last_layer=False`` restores
+    the earlier behaviour (staircase only BETWEEN layers), which leaves n_l=1 a product
+    state -- kept only to reproduce runs made before this was corrected.
+
+    Figure 2 also draws FOUR rotations per qubit per layer (RY RZ RY RZ), which is
+    irreconcilable with the paper's own parameter counts; see LAYOUT_STATUS.
+    """
     gates: list[Gate] = []
     for layer in range(n_l):
         for q in range(n_qb):
             gates.append(Gate("RY", (q,), param=layer * n_qb + q, noise_qubit=q))
-        if layer < n_l - 1:
+        if entangle_after_last_layer or layer < n_l - 1:
             gates.extend(Gate("CX", (q, q + 1)) for q in range(n_qb - 1))
     return tuple(gates)
 
 
-def bel_layout(n_qb: int, n_l: int) -> tuple[Gate, ...]:
-    """BEL: [RY RZ RY RZ per qubit, then a CRY ring] x n_l, then a final RY per qubit.
+def bel_layout(n_qb: int, n_l: int, *, initial_hadamard: bool = True) -> tuple[Gate, ...]:
+    """BEL: H on every qubit, then [RY RZ RY RZ per qubit, a CRY ring] x n_l, final RY.
+
+    The leading Hadamard layer is drawn explicitly in Figure 3 (one H on every qubit,
+    before any rotation). It carries no parameters, so it does not affect N_params, but
+    it does change the state the rotations act on. ``initial_hadamard=False`` restores
+    the earlier behaviour, kept only to reproduce runs made before this was corrected.
 
     Angle index = (layer*n_qb + q)*5 + k for slot k in 0..4 of the layered part
     (k=4 is the controlled rotation), and 5*n_l*n_qb + q for the final RY.
@@ -89,6 +120,8 @@ def bel_layout(n_qb: int, n_l: int) -> tuple[Gate, ...]:
         return (layer * n_qb + q) * 5 + k
 
     gates: list[Gate] = []
+    if initial_hadamard:
+        gates.extend(Gate("H", (q,)) for q in range(n_qb))
     for layer in range(n_l):
         for q in range(n_qb):
             gates.append(Gate("RY", (q,), idx(layer, q, 0), q))
@@ -115,6 +148,9 @@ class AnsatzParams:
     n_qb: int
     n_l: int
     ansatz_type: str
+    #: Figure-faithful structure (see simple_layout/bel_layout). False reproduces the
+    #: pre-audit layouts: no leading H on BEL, no CX after the simple ansatz's last layer.
+    figure_layout: bool = True
 
     def __post_init__(self) -> None:
         if self.ansatz_type not in ("simple", "bel"):
@@ -166,9 +202,11 @@ class AnsatzParams:
     def layout(self) -> tuple[Gate, ...]:
         """The gate list, checked on every call against the paper's angle count."""
         gates = (
-            simple_layout(self.n_qb, self.n_l)
+            simple_layout(
+                self.n_qb, self.n_l, entangle_after_last_layer=self.figure_layout
+            )
             if self.ansatz_type == "simple"
-            else bel_layout(self.n_qb, self.n_l)
+            else bel_layout(self.n_qb, self.n_l, initial_hadamard=self.figure_layout)
         )
         used = sorted(g.param for g in gates if g.param is not None)
         if used != list(range(self.n_angles)):
@@ -211,6 +249,8 @@ def layout_to_qasm(n_qb: int, layout: tuple[Gate, ...], param_names: list[str]) 
             lines.append(f"cry({param_names[g.param]}) q[{g.wires[0]}], q[{g.wires[1]}];")
         elif g.name == "CX":
             lines.append(f"cx q[{g.wires[0]}], q[{g.wires[1]}];")
+        elif g.name == "H":
+            lines.append(f"h q[{g.wires[0]}];")
         else:
             raise ValueError(f"Unknown gate {g.name!r}")
     return "\n".join(lines)

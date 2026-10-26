@@ -14,11 +14,20 @@ Same pipeline as scripts/train_gan.py, with only the generator swapped:
 
 Choices this script makes that the paper text available here does not pin down (all are
 flags, all are written into the run's JSON):
-  * --latent-scaling (default minmax): see training/latent_scaling.py.
+  * --latent-scaling (default none, i.e. the generator's [-1, 1] output is fed to the
+    decoder unchanged): the paper never mentions rescaling, and two things support that
+    reading. Its own decoder study (supplementary Sec. 5, Fig. 18) shows the real latent
+    vectors are close to Normal(0, 1), so [-1, 1] already covers the bulk of the latent
+    space; and its BEL QGAN reports <Weight> = 261.4 against a train-set 261.5, which is
+    what you get when the generator covers the CENTRE of the latent space rather than its
+    full range. minmax/zscore remain available (see training/latent_scaling.py).
   * --angle-mode (default literal): Eq. 4 as printed, theta = 2*pi*tanh(.) in (-2pi, 2pi).
-  * Optimiser and schedule: the classical GAN's (Adam 2e-4, betas (0.5, 0.9), 100 epochs,
-    n_critic 5/1 for nominal/tuned). Override with --lr / --n-epochs if the paper's
-    QGAN settings turn out to differ.
+    The paper's prose says the angles lie in [0, 2pi], which its own Eq. 4 does not
+    produce; the formula is taken as authoritative.
+  * Optimiser and schedule: the classical GAN's. This is now confirmed -- Sec. 3.1 says
+    the default scenario uses "latent dimension 10, tuned VAE, and classical GAN
+    hyperparameters" and that "the quantum GANs are trained with 100 epochs".
+    Table 4 and Table 5 use the TUNED GAN settings (--gan-scenario tuned, n_critic=1).
   * W ~ N(0, --weight-init-std), b = 0.
 
 The run's D_l (n_qb for single readout, 2*n_qb for dual) must equal the VAE checkpoint's
@@ -112,9 +121,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--n-layers", type=int, default=2)
     p.add_argument("--readout", choices=["single", "dual"], default="dual")
     p.add_argument("--angle-mode", choices=list(ANGLE_MODES), default="literal")
-    p.add_argument("--latent-scaling", choices=list(SCALING_MODES), default="minmax")
+    p.add_argument("--latent-scaling", choices=list(SCALING_MODES), default="none")
     p.add_argument("--scaling-bound", type=float, default=1.0, help="minmax target range")
     p.add_argument("--weight-init-std", type=float, default=1.0)
+    p.add_argument(
+        "--legacy-layout",
+        action="store_true",
+        help="reproduce the pre-audit circuits: no leading Hadamard layer on BEL, and no "
+        "CX staircase after the simple ansatz's last layer (see circuits/ansatz.py)",
+    )
     p.add_argument("--qdevice", default="default.qubit", help="PennyLane device name")
     p.add_argument("--lr", type=float, default=None, help="override the baseline's 2e-4")
     p.add_argument("--n-epochs", type=int, default=None, help="override the baseline's 100")
@@ -147,6 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         readout=args.readout,
         angle_mode=args.angle_mode,
         weight_init_std=args.weight_init_std,
+        figure_layout=not args.legacy_layout,
         device=args.qdevice,
     ).to(device)
     if generator.latent_dim != vae_dim:
@@ -224,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         "angle_mode": args.angle_mode,
         "latent_scaling": scaler.state_dict(),
         "weight_init_std": args.weight_init_std,
+        "figure_layout": not args.legacy_layout,
         "latent_dim": vae_dim,
         "noise_dim": generator.noise_dim,
         "n_generator_params": n_params,

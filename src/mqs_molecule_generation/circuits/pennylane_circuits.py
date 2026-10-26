@@ -27,6 +27,8 @@ def apply_ansatz(layout: tuple[Gate, ...], angles) -> None:
             qml.CRY(angles[..., g.param], wires=list(g.wires))
         elif g.name == "CX":
             qml.CNOT(wires=list(g.wires))
+        elif g.name == "H":
+            qml.Hadamard(wires=g.wires[0])
         else:
             raise ValueError(f"Unknown gate {g.name!r}")
 

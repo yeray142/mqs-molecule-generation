@@ -48,12 +48,30 @@ class TestQNode:
         out = np.asarray(stack_expvals(qn(angles)))
         assert np.all(np.abs(out) <= 1 + 1e-9)
 
-    def test_zero_angles_leave_the_all_zero_state(self, kind, n_qb, n_l, readout) -> None:
+    def test_zero_angles_give_the_state_the_fixed_gates_alone_produce(
+        self, kind, n_qb, n_l, readout
+    ) -> None:
+        """All angles 0 makes every rotation the identity, leaving only the fixed gates.
+
+        simple: CX on |0...0> is still |0...0>, so <Z> = +1 and <X> = 0.
+        BEL: its leading Hadamard layer (Fig. 3) gives |+>^n, so <Z> = 0 and <X> = +1.
+        """
         ap = AnsatzParams(n_qb, n_l, kind)
         qn = build_qnode(ap, readout, interface="autograd")
         out = np.asarray(stack_expvals(qn(pnp.zeros(ap.n_angles))))
-        np.testing.assert_allclose(out[:n_qb], 1.0, atol=1e-12)  # <Z> = +1 on |0...0>
-        np.testing.assert_allclose(out[n_qb:], 0.0, atol=1e-12)  # <X> = 0 (dual only)
+        z_expected, x_expected = (0.0, 1.0) if kind == "bel" else (1.0, 0.0)
+        np.testing.assert_allclose(out[:n_qb], z_expected, atol=1e-12)
+        np.testing.assert_allclose(out[n_qb:], x_expected, atol=1e-12)
+
+    def test_legacy_layout_still_starts_from_all_zero(
+        self, kind, n_qb, n_l, readout
+    ) -> None:
+        """figure_layout=False has no Hadamard layer, so |0...0> survives zero angles."""
+        ap = AnsatzParams(n_qb, n_l, kind, figure_layout=False)
+        qn = build_qnode(ap, readout, interface="autograd")
+        out = np.asarray(stack_expvals(qn(pnp.zeros(ap.n_angles))))
+        np.testing.assert_allclose(out[:n_qb], 1.0, atol=1e-12)
+        np.testing.assert_allclose(out[n_qb:], 0.0, atol=1e-12)
 
     def test_gradients_reach_every_angle(self, kind, n_qb, n_l, readout) -> None:
         ap = AnsatzParams(n_qb, n_l, kind)
@@ -71,7 +89,7 @@ def test_queued_gates_match_the_gate_list_one_to_one(kind) -> None:
     ap = AnsatzParams(4, 2, kind)
     angles = np.arange(1, ap.n_angles + 1, dtype=float) / 10.0
     ops = qml.tape.make_qscript(apply_ansatz)(ap.layout, angles).operations
-    to_ir = {"RY": "RY", "RZ": "RZ", "CRY": "CRY", "CNOT": "CX"}
+    to_ir = {"RY": "RY", "RZ": "RZ", "CRY": "CRY", "CNOT": "CX", "Hadamard": "H"}
     assert [to_ir[o.name] for o in ops] == [g.name for g in ap.layout]
     for op, gate in zip(ops, ap.layout, strict=True):
         assert list(op.wires) == list(gate.wires)

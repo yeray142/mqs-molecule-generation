@@ -36,10 +36,12 @@ def test_drawn_circuit_has_one_row_per_qubit_and_the_controlled_ring(script, cap
 
 
 def test_provenance_is_always_printed(script, capsys) -> None:
-    script.main(["--ansatz", "simple"])
-    assert "UNVERIFIED" in capsys.readouterr().out
-    script.main(["--ansatz", "bel"])
-    assert "PROVISIONAL" in capsys.readouterr().out
+    """Both layouts now carry the Fig. 2 / Fig. 3 provenance note."""
+    for ansatz in ("simple", "bel"):
+        script.main(["--ansatz", ansatz])
+        out = capsys.readouterr().out
+        assert "PARTIALLY VERIFIED" in out
+        assert "Fig." in out
 
 
 def test_qasm_flag_emits_parseable_qasm(script, capsys) -> None:
@@ -53,4 +55,5 @@ def test_qasm_flag_emits_parseable_qasm(script, capsys) -> None:
 def test_paper_config_table(script, capsys) -> None:
     assert script.main(["--paper-configs"]) == 0
     out = capsys.readouterr().out
-    assert "55/110" in out and "0/11 rows entered" in out
+    assert "55/110" in out
+    assert "7/7 rows entered" in out

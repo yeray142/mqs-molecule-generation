@@ -111,21 +111,22 @@ class TestSimpleAnsatzQASM:
         assert "qubit[2] q" in qasm
         assert "ry(angle_0) q[0];" in qasm
 
-    def test_simple_qasm_no_entanglement_last_layer(self) -> None:
-        """Test simple ansatz has no CX after last layer."""
-        qasm = build_simple_ansatz_qasm(n_qb=2, n_l=1)
-        lines = qasm.split("\n")
-        # Count CX gates - should be 0 for n_l=1
-        cx_count = sum(1 for line in lines if line.strip().startswith("cx "))
-        assert cx_count == 0
+    @staticmethod
+    def _cx_count(qasm: str) -> int:
+        return sum(1 for line in qasm.split("\n") if line.strip().startswith("cx "))
 
-    def test_simple_qasm_entanglement_between_layers(self) -> None:
-        """Test simple ansatz has CX gates between layers."""
-        qasm = build_simple_ansatz_qasm(n_qb=2, n_l=2)
-        lines = qasm.split("\n")
-        # Count CX gates - should be 1 for n_l=2 (between layer 0 and 1)
-        cx_count = sum(1 for line in lines if line.strip().startswith("cx "))
-        assert cx_count == 1
+    def test_simple_qasm_entangles_in_every_layer(self) -> None:
+        """Figure 2 draws the CNOT staircase after the rotations of its single layer.
+
+        So a one-layer circuit has n_qb-1 CNOTs (it is NOT a product state), and each
+        further layer adds another staircase. This replaces two earlier tests that
+        asserted 0 CX for n_l=1 and 1 CX for n_qb=2/n_l=2, which encoded the pre-audit
+        placement (staircase only BETWEEN layers).
+        """
+        assert self._cx_count(build_simple_ansatz_qasm(n_qb=2, n_l=1)) == 1
+        assert self._cx_count(build_simple_ansatz_qasm(n_qb=2, n_l=2)) == 2
+        assert self._cx_count(build_simple_ansatz_qasm(n_qb=5, n_l=1)) == 4
+        assert self._cx_count(build_simple_ansatz_qasm(n_qb=5, n_l=3)) == 12
 
 
 class TestBELAnsatzQASM:

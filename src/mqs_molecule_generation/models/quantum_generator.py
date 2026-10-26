@@ -39,6 +39,7 @@ class QuantumGenerator(nn.Module):
         readout: str = "dual",
         angle_mode: str = "literal",
         weight_init_std: float = 1.0,
+        figure_layout: bool = True,
         device: str = "default.qubit",
         diff_method: str = "backprop",
     ) -> None:
@@ -46,7 +47,9 @@ class QuantumGenerator(nn.Module):
         if angle_mode not in ANGLE_MODES:
             raise ValueError(f"angle_mode must be one of {ANGLE_MODES}, got {angle_mode!r}")
 
-        self.ansatz = AnsatzParams(n_qb=n_qubits, n_l=n_layers, ansatz_type=ansatz_type)
+        self.ansatz = AnsatzParams(
+            n_qb=n_qubits, n_l=n_layers, ansatz_type=ansatz_type, figure_layout=figure_layout
+        )
         self.readout = readout
         self.angle_mode = angle_mode
         self.weight_init_std = weight_init_std
@@ -87,6 +90,7 @@ class QuantumGenerator(nn.Module):
         a = self.ansatz
         return (
             f"{a.ansatz_type}, n_qb={a.n_qb}, n_l={a.n_l}, readout={self.readout}, "
-            f"angle_mode={self.angle_mode}, noise_dim={self.noise_dim}, "
+            f"angle_mode={self.angle_mode}, figure_layout={self.ansatz.figure_layout}, "
+            f"noise_dim={self.noise_dim}, "
             f"latent_dim={self.latent_dim}, n_angles={a.n_angles}, n_params={a.n_params}"
         )
